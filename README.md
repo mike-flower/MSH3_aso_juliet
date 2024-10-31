@@ -7,6 +7,10 @@ This repository contains the RMarkdown file for statistical analysis of repeat i
 
 - **02-juliet_live.Rmd**: An RMarkdown file outlining the statistical methods and visualisation steps for analysing repeat instability in the dataset. This includes data loading, processing, and interpretation.
 
+- **romeo.csv**: A csv file containing fragment analysis data.
+
+- **romeo_techrep_averaged.csv**: Technical replicates from *romeo.csv* have been averaged.
+
 ## Requirements
 
 To run this analysis, you will need:
