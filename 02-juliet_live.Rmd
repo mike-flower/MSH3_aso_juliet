@@ -1,0 +1,1896 @@
+---
+title: "2. Juliet"
+subtitle: "Repeat instability statistics"
+author: "Michael Flower"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    number_sections: false
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+Statistical analysis of repeat instability data prepared by Romeo.
+
+``` {r knit, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+# rmarkdown::render("01-romeo.Rmd",
+#                   output_file = file.path(out_dir, "01-romeo.html"))
+
+```
+
+
+# Setup environment
+
+Set the local home directory for analysis.
+
+``` {r setup_environment, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+# Set the working directory where all WGCNA functions are stored
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) # https://stackoverflow.com/questions/13672720/r-command-for-setting-working-directory-to-source-file-location-in-rstudio
+# getwd()
+
+```
+
+
+Load packages.
+
+``` {r load_packages, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, results="hide"}
+
+# Required packages
+packages <- c("shiny", "shinyauthr", "plyr", "dplyr", "ggplot2", "data.table",
+              "readxl", "tidyr", "tidyverse", "janitor", "patchwork", "pbapply",
+              "plotly", "ggnewscale", "ggdark", "xlsx", "svDialogs", "gridExtra",
+              "ggpmisc", "rmarkdown", "psych", "openxlsx", "ggpubr",
+              "flextable", "ggthemes", "lubridate", "DT", "writexl",
+              "shinyjs", "ggrepel", "gganimate", "transformr", "gifski",
+              "rstatix", "ggstatsplot", "sjPlot", "car", "emmeans", "nlme",
+              "forcats", "broom", "broom.mixed", "stringr", "ggeffects", "scales",
+              "influence.ME", "lme4", "kableExtra", "jtools", "RColorBrewer",
+              "MuMIn", "lmerTest")
+
+# # Install R packages if required
+# install.packages(setdiff(packages, rownames(installed.packages())))
+
+# # Install bioconductor packages if required
+# BiocManager::install(setdiff(packages, rownames(installed.packages())))
+# invisible(lapply(packages, function(x) library(x, character.only=TRUE)))
+
+# Load
+lapply(packages, library, character.only = TRUE)
+rm(packages)
+
+# Load custom functions
+source("functions.R")
+
+## Clear objects
+# rm(list = ls()) # This would cause rmarkdown to error
+
+```
+
+
+# Set variables
+
+Set variables that determine how the analysis is done.
+
+``` {r set_variables, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE}
+
+# Results directory
+out_dir <- "./results"
+
+# Juliet settings path
+juliet_settings_path = "./platemap/2023.11.05_platemap_emma_2.6.xlsx"
+
+# Juliet settings sheet
+juliet_settings_sheet = "settings_juliet"
+
+# Y-axis threshold variable
+ythreshold_var = "height"
+
+# Y-axis threshold
+ythreshold = 40
+
+# Tech outlier yvar
+tech_yvar = "area"
+
+# Tech outlier metric
+tech_metric = "ii"
+
+# Outlier threshold for technical replicates
+outlier_threshold = 1.5
+
+# Instability metrics to use for stats
+stats_metrics = c("modal_rpt", "mean_rpt", "sd_rpt", "ii", "expi", "contri")
+
+# Instability metrics to display
+stats_metrics_display = c("ii", "expi", "contri")
+
+# Rename metrics used in stats
+stats_metrics_rename = c("modal_rpt" = "Modal repeat length", 
+                         "mean_rpt" = "Mean repeat length", 
+                         "sd_rpt" = "Repeat SD", 
+                         "ii" = "Instability index",
+                         "expi" = "Expansion index",
+                         "contri" = "Contraction index")
+
+# Y-axis variable to use for stats
+stats_yvar = "area"
+
+# Setpoint to use for stats
+stats_setpoint = "control" # self
+
+# Share baseline
+share_baseline = TRUE
+
+# Remove technical replicate outliers
+remove_tech_outliers = TRUE
+
+# Hide non-significant stats on plots
+hide_ns = TRUE
+
+# Annotation path
+annotation_path = "./platemap/2023.11.05_platemap_emma_2.6.xlsx"
+
+# Annotation sheet
+annotation_sheet = "annotation"
+
+# Group order for plots
+group_order_source = "settings"
+
+# Zero the baseline in timecourses
+timecourse_baseline_zero = TRUE
+
+# Smoothing for electrophoresis traces
+smooth_span = 0.2 # 0.075
+
+# Models
+fits = list("lm_ancova2" = c("function" = "lm",
+                             "formula" = "responsevar_blnorm ~ predvar1 * time"),
+            "lm_ancova3.1" = c("function" = "lm",
+                               "formula" = "responsevar_blnorm ~ predvar1 * time + predvar2"),
+            "lm_ancova3.2" = c("function" = "lm",
+                               "formula" = "responsevar_blnorm ~ predvar1 * time + predvar2 * time"),
+            "lmer_ancova3.1" = c("function" = "lmer",
+                                 "formula" = "responsevar_blnorm ~ predvar1 * time + (1 | predvar2)"),
+            "lmer_ancova3.2" = c("function" = "lmer",
+                                 "formula" = "responsevar_blnorm ~ predvar1 * time + (1 + time | predvar2)"))
+
+# Selected model
+selected_fit = "lmer_ancova3.2"
+
+# Errorbar on rate plot
+# slope_errorbar = "CL" # "CL", "SE", "SD"
+slope_errorbar = "SE"
+
+# Plot individual slopes as points on the rate plot
+plot_points = FALSE
+# plot_points = TRUE
+
+# Multiple testing
+multiple_testing = "BH" # "tukey", "bonferroni"
+
+# Save
+save_rdata = FALSE
+
+```
+
+
+# Load previous data
+
+Load Romeo data into a separate environment so current objects aren't overwritten.
+
+``` {r load_data, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE}
+
+# Load romeo
+romeo_env <- new.env() # Create a new environment
+load(file = file.path(out_dir, "01-romeo.RData"),
+     envir = romeo_env)
+print("01-romeo objects:")
+ls(envir = romeo_env)
+
+```
+
+
+# Import settings
+
+Import user settings that determine how to analyse each sample.
+
+``` {r import_settings, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE}
+
+# Import settings
+juliet_settings <- read_excel(path = juliet_settings_path,
+                              sheet = juliet_settings_sheet) %>%
+  dplyr::select(sample_name, experiment_id, unique_id, group, time, shared_sample_donor,
+                shared_sample_recipient, exclude) # experiment ID is not a standard column in online juliet
+
+# Import annotation
+annotation <- read_excel(path = annotation_path,
+                         sheet = annotation_sheet) %>%
+  dplyr::filter(!is.na(experiment_id)) %>%
+  arrange(group_order) %>%
+  dplyr::select(experiment_id, group_juliet, group_colour, group_rename, group_order) %>%
+  distinct() %>%
+  droplevels()
+
+```
+
+
+# Annotate samples
+
+Add information from the user-prepared settings file.
+
+``` {r add_settings, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE}
+
+# Extract objects from other environments
+gm_samples <- romeo_env$gm_samples
+romeo_summary <- romeo_env$romeo_summary
+romeo_settings <- romeo_env$romeo_settings
+
+# Make directory to hold temporary files
+if (!dir.exists(file.path(out_dir, "02-juliet"))) {
+  dir.create(file.path(out_dir, "02-juliet"), 
+             recursive = TRUE)
+}
+
+# Add settings to genemapper data
+if (file.exists(file.path(out_dir, "02-juliet", "gm_data.RData"))) {
+  load(file.path(out_dir, "02-juliet", "gm_data.RData"))
+} else {
+
+  # Add settings
+  gm_data <- pblapply(gm_samples, function(gm_sample,
+                                        juliet_settings,
+                                        romeo_settings) {
+    gm_sample %>%
+      left_join(juliet_settings,
+                by = join_by(sample_name)) %>% # group_juliet is genotype/treatment/dose
+      dplyr::mutate(sample_name = fct_relevel(sample_name, unique(juliet_settings$sample_name)),
+                    group = fct_relevel(group, unique(juliet_settings$group))) %>%
+      relocate(any_of(names(juliet_settings))) %>%
+      dplyr::rename(day = time) %>%
+      dplyr::mutate(week = day / 7) %>% # Convert days into weeks
+      relocate(week, .after = "day") %>%
+      left_join(romeo_settings %>%
+                  dplyr::select(sample_name, group), # romeo group used as differentiation ID for bio rep counting later (experiment_id/differentiation_id/clone/genotype)
+                by = join_by(sample_name),
+                suffix = c("_juliet", "_romeo")) %>%
+      relocate(group_romeo, .before = "group_juliet") %>%
+      droplevels()
+  },
+  juliet_settings = juliet_settings,
+  romeo_settings = romeo_settings)
+  
+  # Save
+  save(gm_data,
+       file = file.path(out_dir, "02-juliet", "gm_data.RData"))
+  
+}
+
+# Add settings to romeo instability data and label tech reps
+romeo_data <- romeo_summary %>%
+  left_join(juliet_settings,
+            by = join_by(sample_name)) %>%
+  relocate(any_of(names(juliet_settings))) %>%
+  dplyr::mutate(sample_name = fct_relevel(sample_name, unique(juliet_settings$sample_name)),
+                group = fct_relevel(group, unique(juliet_settings$group))) %>%
+  dplyr::rename(day = time) %>%
+  dplyr::mutate(week = day / 7) %>% # Convert days into weeks
+  relocate(week, .after = "day") %>%
+  left_join(romeo_settings %>%
+                  dplyr::select(sample_name, group), # romeo group used as differentiation id for bio rep counting later (experiment_id/differentiation_id/clone/genotype)
+                by = join_by(sample_name),
+                suffix = c("_juliet", "_romeo")) %>%
+  dplyr::mutate(group_romeo = fct_relevel(group_romeo, unique(romeo_settings$group))) %>%
+  relocate(group_romeo, .before = "group_juliet") %>%
+  group_by(unique_id) %>%
+  mutate(tech_rep = dense_rank(sample_name)) %>% # numbering is in alphabetical order of the samples (not the order they are in in the table)
+  ungroup() %>%
+  droplevels()
+
+```
+
+
+# Sample exclusions
+
+Exclude samples based on missing input (unique ID and group details), poor amplification and explicit exclusions by the user in the settings sheet.
+
+The order of priority for exclusions is:
+
+1. **Missing information**. Sample not included in any of these experiments.
+
+2. **Explicitly excluded**. Sample manually excluded by the user in the settings sheet, usually due to artefact.
+
+3. **Peak too small**. Poor amplification, with peak height/area smaller than the user defined threshold (e.g. height < 40 rfu).
+
+4. **No peak found**. No peak was found in the target window.
+
+
+## Exclusions
+
+``` {r additional_exclusions, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE}
+
+# Exclusions by differentiation ID (group_romeo)
+romeo_group_exclusions <- c("MSH3ko_CRISPRwt-NI1908-Cl37-MSH3ko",
+                            "MSH3ko_CRISPRwt-NI0408-WT_JH-unedited", # used in manual experiment 'manual_MSH3ko_under105d', vehicle treatment
+                            "MSH3ko_CRISPRwt-NI1708-Cl26-MSH3ko") # used in manual experiment 'manual_MSH3ko_under105d', MSH3ko
+
+romeo_data <- romeo_data %>%
+  dplyr::mutate(exclude = case_when(group_romeo %in% romeo_group_exclusions ~ 1,
+                                    TRUE ~ exclude))
+
+```
+
+
+## Apply exclusions
+
+``` {r apply_exclusions, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE}
+
+# Exclusion priority
+exclusion_priority <- c("missing_input", "explicitly_excluded", "peak_too_small", "no_peak_found")
+
+# Find samples to exclude
+exclusion_details <- romeo_data %>%
+  dplyr::filter(yvar == ythreshold_var, 
+                range == "range2", 
+                setpoint == "self") %>%
+  dplyr::mutate(missing_input = is.na(unique_id) | is.na(group_juliet),
+                peak_too_small = modal_y < ythreshold,
+                no_peak_found = is.na(modal_rpt),
+                explicitly_excluded = !is.na(exclude)) %>%
+  dplyr::mutate(exclusion_reason = case_when(!!sym(exclusion_priority[[1]]) ~ exclusion_priority[[1]],
+                                             !!sym(exclusion_priority[[2]]) ~ exclusion_priority[[2]],
+                                             !!sym(exclusion_priority[[3]]) ~ exclusion_priority[[3]],
+                                             !!sym(exclusion_priority[[4]]) ~ exclusion_priority[[4]],
+                                             TRUE ~ NA),
+                excluded = missing_input | peak_too_small | no_peak_found | explicitly_excluded)
+
+# Update the exclusion_details dataset with your exclusion priority logic
+exclusion_summary <- exclusion_details %>%
+  group_by(unique_id) %>%
+  summarise(total_samples = n(),
+            missing_input = sum(exclusion_reason == "missing_input", na.rm = TRUE),
+            explicitly_excluded = sum(exclusion_reason == "explicitly_excluded", na.rm = TRUE),
+            peak_too_small = sum(exclusion_reason == "peak_too_small", na.rm = TRUE),
+            no_peak_found = sum(exclusion_reason == "no_peak_found", na.rm = TRUE),
+            remaining_samples = sum(is.na(exclusion_reason), na.rm = TRUE)) %>%
+  ungroup() %>%
+  dplyr::mutate(completely_removed = remaining_samples == 0)
+
+# Count completely removed samples
+complete_removal_summary <- exclusion_summary %>%
+  dplyr::summarise(uniqueIDs_with_remaining_samples = sum(!completely_removed, na.rm = TRUE),
+                   completely_removed_uniqueIDs = sum(completely_removed, na.rm = TRUE))
+
+# Long format for plotting
+exclusion_summary_long <- exclusion_summary %>%
+  pivot_longer(cols = c("missing_input", "explicitly_excluded", "peak_too_small", "no_peak_found", "remaining_samples"),
+               names_to = "exclusion_reason",
+               values_to = "count") %>%
+  dplyr::mutate(exclusion_reason = fct_relevel(exclusion_reason, exclusion_priority))
+
+# Exclude samples
+samples_to_exclude <- exclusion_details %>%
+  dplyr::filter(excluded)
+samples_to_exclude <- samples_to_exclude$sample_name
+romeo_data <- romeo_data %>%
+  dplyr::filter(!sample_name %in% samples_to_exclude)
+
+```
+
+
+### Completely removed unique IDs
+
+Unique IDs (wells) where all samples (technical replicates) were completely removed.
+
+``` {r uniqueid_removed, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=4, fig.width=8}
+
+# Display table
+kable(complete_removal_summary, caption = "Unique ID removal summary")
+
+# Plot completely removed unique IDs
+ggplot(exclusion_summary_long %>%
+         dplyr::filter(completely_removed,
+                       !is.na(unique_id)),
+       aes(x = unique_id, y = count, fill = exclusion_reason)) +
+  geom_bar(stat = "identity") +
+  scale_x_discrete(guide = guide_axis(angle = 75)) +
+  labs(title = "Completely removed unique IDs",
+       caption = paste0("Exclusion priority: ", paste(exclusion_priority, collapse = ", ")),
+       x = "Unique ID",
+       y = "Number of samples",
+       fill = "Exclusion reason") +
+  theme_minimal()
+
+```
+
+
+### Remaining unique IDs
+
+Unique IDs (wells) with remaining samples (technical replicates).
+
+``` {r uniqueid_remaining, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=20}
+
+# Plot remaining unique IDs
+ggplot(exclusion_summary_long %>%
+         dplyr::filter(!completely_removed,
+                       !is.na(unique_id)),
+       aes(x = unique_id, y = count, fill = exclusion_reason)) +
+  geom_bar(stat = "identity") +
+  scale_x_discrete(guide = guide_axis(angle = 75)) +
+  labs(title = "Remaining unique IDs",
+       caption = paste0("Exclusion priority: ", paste(exclusion_priority, collapse = ", ")),
+       x = "Unique ID",
+       y = "Number of samples",
+       fill = "Exclusion reason") +
+  theme_minimal()
+
+```
+
+
+# Share baseline samples
+
+Baseline samples are replicated from donor to recipient groups, as determined by the user in the settings sheet. Baseline samples are typically shared between all treatment groups within a differentiation.
+
+``` {r share_baseline, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE}
+
+if (share_baseline) {
+  
+  #=====================================================================================
+  # Genemapper data
+  #=====================================================================================
+  # Merge genemapper data into a single dataframe
+  gm_merge <- rbindlist(gm_data)
+  
+  # Extract baseline samples and split into a list by share ID
+  gm_baseline <- gm_merge %>%
+    dplyr::filter(!is.na(shared_sample_donor)) %>%
+    split(f = as.factor(.$shared_sample_donor))
+  
+  # Remove baseline samples from source data and split into a list by share ID
+  gm_recipient <- gm_merge %>%
+    dplyr::filter(is.na(shared_sample_donor)) %>%
+    split(f = as.factor(.$shared_sample_recipient))
+  
+  # Vector of sharing IDs
+  share_ids <- setNames(names(gm_baseline), names(gm_baseline))
+  
+  # Within each share ID, replicate baseline samples across all groups
+  gm_edit <- lapply(share_ids, function(share_id,
+                                        gm_baseline,
+                                        gm_recipient) {
+    
+    # Extract recipient data
+    my_recipient <- gm_recipient[[share_id]]
+    
+    # Extract donor data
+    my_baseline <- gm_baseline[[share_id]]
+    
+    # Groups present in this share ID
+    my_groups <- as.character(unique(my_recipient$group_juliet))
+    
+    # Add baseline samples to each group
+    for (my_group in my_groups) {
+      
+      # Change group ID for the donor data
+      donor_data <- my_baseline %>%
+        dplyr::mutate(group_juliet = my_group)
+      
+      # Add donor data to this recipient group
+      my_recipient <- rbind(my_recipient,
+                            donor_data)
+    }
+    
+    # Output
+    return(my_recipient)
+    
+  },
+  gm_baseline = gm_baseline,
+  gm_recipient = gm_recipient)
+  
+  # rbind share IDs back into a single dataframe
+  gm_edit <- rbindlist(gm_edit)
+  
+  # Split back into a list by sample name
+  gm_data <- gm_edit %>%
+    split(f = as.factor(.$sample_name))
+  
+  
+  #=====================================================================================
+  # Repeat length and instability summary data
+  #=====================================================================================
+  # Extract baseline samples and split into a list by share ID
+  romeo_baseline <- romeo_data %>%
+    dplyr::filter(!is.na(shared_sample_donor)) %>%
+    split(f = as.factor(.$shared_sample_donor))
+  
+  # Remove baseline samples from source data and split into a list by share ID
+  romeo_recipient <- romeo_data %>%
+    dplyr::filter(is.na(shared_sample_donor)) %>%
+    split(f = as.factor(.$shared_sample_recipient))
+  
+  # Vector of sharing IDs
+  share_ids <- setNames(names(romeo_baseline), names(romeo_baseline))
+  
+  # Within each share ID, replicate baseline samples across all groups
+  romeo_edit <- lapply(share_ids, function(share_id,
+                                           romeo_baseline,
+                                           romeo_recipient) {
+    # Extract recipient data
+    my_recipient <- romeo_recipient[[share_id]]
+    
+    # Extract donor data
+    my_baseline <- romeo_baseline[[share_id]]
+    
+    # Groups present in this share ID
+    my_groups <- as.character(unique(my_recipient$group_juliet))
+    
+    # Add baseline samples to each group
+    for (my_group in my_groups) {
+      
+      # Change group ID for the donor data
+      donor_data <- my_baseline %>%
+        dplyr::mutate(group_juliet = my_group)
+      
+      # Add donor data to this recipient group
+      my_recipient <- rbind(my_recipient,
+                            donor_data)
+    }
+    
+    # Output
+    return(my_recipient)
+    
+  },
+  romeo_baseline = romeo_baseline,
+  romeo_recipient = romeo_recipient)
+  
+  # rbind share IDs back into a single dataframe
+  romeo_data <- rbindlist(romeo_edit)
+  
+}
+
+```
+
+
+# QC instability metrics
+
+## Analyse metrics
+
+Compare repeat length and instability metrics by treatment group (group_juliet).
+
+``` {r qc_create, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE}
+
+# Extract objects from other environments
+yvar_names <- romeo_env$yvar_names
+setpoint_names <- romeo_env$setpoint_names
+romeo_metric_names <- c("modal_bp", "modal_rpt", "modal_y", "ii_threshold_abs", "mean_rpt", 
+                        "sd_rpt", "setpoint_rpt", "ii", "expi", "contri")
+names(romeo_metric_names) <- romeo_metric_names
+
+# Format romeo summary data for plotting
+romeo_data_plot <- romeo_data %>%
+  dplyr::filter(range == "range2") %>%
+  pivot_longer(cols = c(modal_bp, modal_rpt, modal_y, ii_threshold_abs, mean_rpt, sd_rpt,
+                        setpoint_rpt, ii, expi, contri),
+               names_to = "metric") %>%
+  dplyr::mutate(yvar = fct_relevel(yvar, c("height", "area")),
+                setpoint = fct_relevel(setpoint, c("self", "control")),
+                metric = fct_relevel(metric, c("modal_bp", "modal_rpt", "modal_y", "ii_threshold_abs", "mean_rpt", 
+                                               "sd_rpt", "setpoint_rpt", "ii", "expi", "contri")))
+
+# Plot
+romeo_data_stats <- lapply(yvar_names, function(yvar_name,
+                                                romeo_data_plot,
+                                                setpoint_names,
+                                                romeo_metric_names) {
+  stats_setpoints <- lapply(setpoint_names, function(setpoint_name,
+                                                 yvar_name,
+                                                 romeo_data_plot,
+                                                 romeo_metric_names) {
+    stats_metrics <- lapply(romeo_metric_names, function(romeo_metric_name,
+                                                               yvar_name,
+                                                               setpoint_name,
+                                                               romeo_data_plot) {
+      
+      # Extract data
+      my_data <- romeo_data_plot %>%
+        dplyr::filter(yvar == yvar_name,
+                      setpoint == setpoint_name,
+                      metric == romeo_metric_name) %>%
+        droplevels()
+
+      # Plot
+      my_apothecary <- apothecary(data = my_data,
+                                  xvar = "group_juliet", xlab = "Group", xangle = 75,
+                                  yvar = "value", ylab = romeo_metric_name,
+                                  title = paste("Setpoint:", setpoint_name),
+                                  subtitle = paste(romeo_metric_name, "using", yvar_name))
+      
+      # Output
+      return(my_apothecary)
+    },
+    yvar_name = yvar_name,
+    setpoint_name = setpoint_name,
+    romeo_data_plot = romeo_data_plot)
+    
+    # Output
+    return(stats_metrics)
+  },
+  yvar_name = yvar_name,
+  romeo_data_plot = romeo_data_plot,
+  romeo_metric_names = romeo_metric_names)
+  
+  # Output
+  return(stats_setpoints)
+},
+romeo_data_plot = romeo_data_plot,
+setpoint_names = setpoint_names,
+romeo_metric_names = romeo_metric_names)
+
+```
+
+
+## Basic metrics
+
+Basic metrics include modal and mean repeat lengths (`modal_rpt` and `mean_rpt`), repeat distribution width (`sd_rpt`), peak height or area (`modal_y`), and control repeat length ("setpoint_rpt").
+
+Pairwise statistical comparisons have been done, but the plots are busy with so many p-value horizontal lines, so have not been included below. They can be accessed using `plot_stats`.
+
+``` {r qc_basic, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=8}
+
+# Select romeo stats
+my_romeo_stats <- romeo_data_stats[[stats_yvar]][[stats_setpoint]]
+
+# Vector of basic metrics to display
+basic_metric_names <- c("modal_rpt", "mean_rpt", "modal_y", "sd_rpt", "setpoint_rpt")
+names(basic_metric_names) <- basic_metric_names
+
+# Display plots
+for (basic_metric_name in basic_metric_names) {
+  print(my_romeo_stats[[basic_metric_name]]$plot)
+}
+
+# # Flatten
+# romeo_data_stats_flat <- unlist(unlist(romeo_data_stats, recursive = FALSE), recursive = FALSE)
+
+# # Display plots without stats
+# for (var in romeo_data_stats_flat) {
+#   print(var$plot)
+# }
+
+```
+
+
+## Instability metrics
+
+Instability metrics are instability index (`ii`), expansion index (`expi`) and contraction index (`ci`). They can be calculated relative to a sample's own modal repeat length (`self`), or relative to a control sample (`control`). The former is simply a measure of skewness of the distribution of an individual sample, whereas the latter measures instability of the whole distribution relative to a control point, typically baseline.
+
+Below, each metric is shown relative to **self** and relative to **control**.
+
+As above, pairwise statistical comparisons have been done, but the plots are busy with so many p-value horizontal lines, so have not been included below. They can be accessed using `plot_stats`.
+
+``` {r qc_instability, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=8}
+
+# Vector of instability metrics to display
+instability_metric_names <- c("ii", "expi", "contri")
+names(instability_metric_names) <- instability_metric_names
+
+# Plot selected metrics for each setpoint
+for (setpoint_name in setpoint_names) {
+  my_romeo_stats <- romeo_data_stats[[stats_yvar]][[setpoint_name]]
+  for (instability_metric_name in instability_metric_names) {
+    cat(paste(setpoint_name, "-", instability_metric_name))
+    print(my_romeo_stats[[instability_metric_name]]$plot)
+  }
+}
+
+```
+
+
+# Count replicates
+
+There are three levels of replicates:
+
+- **Technical replicates** are the same DNA sample run multiple times. They have a different `sample_name`, but the same `unique_id`.
+
+- **Cell well replicates** are cell culture wells that are separate throughout the experiment. This includes wells from the same and from different differentiations.
+
+- **Differentiations** are typically repetitions of the full experimental design, with all treatments performed on the same cell clone at the same time. Separate differentiations may use the same clone, but with neuronal differentiation initiated at a different time, so starting CAG repeat length can differ.
+
+``` {r count_reps, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+# Count differentiations (i.e. romeo_group - experiment_id/differentiation_id/clone/genotype)
+count_differentiations <- romeo_data %>%
+  distinct(group_romeo, group_juliet, week) %>%
+  group_by(group_juliet, week) %>%
+  dplyr::summarise(differentiation = n()) %>%
+  ungroup %>%
+  droplevels()
+
+# Count wells
+count_cellwells <- romeo_data %>%
+  distinct(unique_id, group_juliet, week) %>%
+  group_by(group_juliet, week) %>%
+  dplyr::summarise(cellwell = n()) %>%
+  ungroup() %>%
+  droplevels()
+
+# Count technical reps (same DNA sample)
+count_techreps <- romeo_data %>%
+  distinct(sample_name, unique_id, group_juliet, week) %>%
+  group_by(group_juliet, week) %>%
+  dplyr::summarise(technical = n()) %>%
+  ungroup() %>%
+  droplevels()
+
+# Combine rep counts
+count_reps <- left_join(x = count_differentiations,
+                        y = count_cellwells,
+                        by = join_by(group_juliet, week)) %>%
+  left_join(count_techreps,
+            by = join_by(group_juliet, week)) %>%
+  pivot_longer(cols = c(differentiation, cellwell, technical),
+               names_to = "rep_level",
+               values_to = "count") %>%
+  dplyr::mutate(rep_level = fct_relevel(rep_level, c("differentiation", "cellwell", "technical")))
+
+```
+
+## Barplot
+
+``` {r rep_bar, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=12, fig.width=15}
+
+# Plot columns
+ggplot(count_reps, aes(x = as.factor(week), y = count, fill = rep_level, colour = rep_level)) +
+  facet_wrap(~ group_juliet, scales = "free_y") +
+  geom_col(position = "dodge") +
+  geom_text(aes(label = count), 
+            position = position_dodge(width = 0.9),
+            vjust = -1, show.legend = FALSE) +
+  scale_y_continuous(breaks = pretty_breaks(),
+                     expand = expansion(mult = c(NA, 0.2))) +
+  labs(title = "Replicate levels for each treatment group",
+       x = "Week",
+       y = "Count",
+       fill = "Replicate level",
+       colour = "Replicate level") +
+  theme_minimal()
+
+```
+
+
+## Bubbles
+
+``` {r rep_bubble, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=8}
+
+# Plot bubbles
+ggplot(count_reps, aes(x = week, y = group_juliet, colour = rep_level)) +
+  geom_point(aes(size = count), alpha = 0.5) +
+  scale_size_continuous(range = c(3, 12),
+                        breaks = pretty_breaks()) +
+  labs(x = "Week",
+       y = "Treatment group",
+       colour = "Replicate level",
+       size = "Count") +
+  theme_minimal()
+  
+```
+
+
+# Outlying technical replicates
+
+Outlying technical replicates are found and optionally removed.
+
+``` {r tech_outliers, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=8}
+
+# Calculate IQR stats for each unique_id
+outlier_stats <- romeo_data %>%
+  dplyr::filter(range == "range2",
+                setpoint == "control",
+                yvar == tech_yvar) %>%
+  group_by(unique_id) %>%
+  dplyr::summarise(techmedian = median(!!sym(tech_metric), na.rm = TRUE),
+                   tech_iqr = IQR(!!sym(tech_metric), na.rm = TRUE)) %>%
+  ungroup() %>%
+  dplyr::mutate(outlier_limit = outlier_threshold * tech_iqr)
+
+# Join IQR stats
+romeo_techoutliers <- romeo_data %>%
+  dplyr::filter(range == "range2",
+                setpoint == "control",
+                yvar == tech_yvar) %>%
+  left_join(outlier_stats,
+            by = join_by(unique_id)) %>%
+  dplyr::mutate(dtechmedian = !!sym(tech_metric) - techmedian,
+                dtechmedian_abs = abs(dtechmedian),
+                outlier_tech = dtechmedian_abs > outlier_limit)
+
+# Outlier samples
+tech_outlier_sample_names <- romeo_techoutliers %>%
+  dplyr::filter(outlier_tech) %>%
+  distinct(sample_name)
+tech_outlier_sample_names <- tech_outlier_sample_names$sample_name
+
+# Prepare a random sample to plot
+random_unique_ids <- romeo_techoutliers %>%
+  distinct(unique_id) %>%
+  slice_sample(n = 50)
+random_unique_ids <- random_unique_ids$unique_id
+romeo_techoutliers_randomplot <- romeo_techoutliers %>%
+  dplyr::filter(unique_id %in% random_unique_ids)
+  
+# Plot outliers
+ggplot(romeo_techoutliers_randomplot, aes(x = unique_id, y = dtechmedian, colour = outlier_tech)) +
+  geom_jitter(size = 2, width = 0.1, height = 0, alpha = 0.5) +
+  # geom_jitter(shape = 21, size = 2, width = 0.1, height = 0, alpha = 0.6) +
+  geom_hline(yintercept = 0, colour = "black") +
+  scale_colour_manual(values = c("TRUE" = "red", "FALSE" = "black"), 
+                     labels = c("TRUE" = "Outlier", "FALSE" = "Normal")) +
+  scale_x_discrete(guide = guide_axis(angle = 75)) +
+  labs(title = "Technical replicate outliers in a 50 random unique samples",
+       subtitle = paste(tech_metric, "relative to control, using", tech_yvar),
+       x = "Unique sample ID",
+       y = "Deviation from median",
+       colour = "Outlier status") +
+  theme_minimal()
+
+# Remove outlier technical replicates
+# This will remove all metrics for these outlier samples, not just the one used to identify tech outliers (tech_metric with tech_yvar)
+if (remove_tech_outliers) {
+  romeo_data <- romeo_data %>%
+    dplyr::filter(!sample_name %in% tech_outlier_sample_names)
+}
+
+```
+
+
+# Timecourse statistics
+
+Statistics are run on each of the following three factors separately:
+
+1. **Mean level**. Data averaged at the level of *unique ID* (averaged by well, i.e. taking the mean of technical replicates), or averaged at the level of *differentiations* (averaged by treatment group and differentiation, i.e. averaging all wells from a treatment group within a differentiation). The three levels of replicates are handled as follows:
+
+  - **Technical replicates** are the same DNA sample run multiple times. They have different `sample_name`, but the same `unique_id`. Outlying technical replicates were optionally removed above, and will be averaged below before statistical analysis.
+
+  - **Cell well replicates** are cell culture wells that are separate throughout the experiment. This includes wells from the same and from different differentiations. THey are referred to as `unique_id`.
+
+  - **Differentiations** are typically repetitions of the full experimental design, with all treatments performed on the same cell clone at the same time. Separate differentiations may use the same clone, but with neuronal differentiation initiated at a different time, so starting CAG repeat length can differ. Differentiations, and therefore starting repeat length, can be controlled for in the statistical model. Differentiations are referred to as `predvar2`.
+
+2. **Instability metric**.
+
+3. **Experiment ID**. Experiments are defined in the `experiment_id` column of the settings sheet.
+
+  - **MSH3aso_dose_titration** is *Figure 2A-B*. It shows the dose titration of MSH3 ASO.
+  
+  - **FAN1ko_MSH3aso** is *Figure 3A-B*. It shows the effect of 3 µM MSH3 ASO in FAN1-/- cells, compared to vehicle and SCR ASO.
+  
+  - **CRISPRwt_MSH3aso** is *Figures 3D-E*. It shows the effect of 3 µM MSH3 ASO in unedited cells, compared to vehicle and SCR ASO.
+  
+  - **MSH3ko_CRISPRwt** is not currently in the paper. It shows the effect of MSH3 ASO on an MSH3-/- background.
+  
+  - **MSH3ko vs CRISPRwt experiment** is *Figure 2E-F*. It shows the effect of MSH3-/-, relative to unedited cells. Data comes from `MSH3ko_CRISPRwt` and `CRISPRwt_MSH3aso`, which were provided as separate experiments - these data were reassigned a new `experiment_id` and analysed separately.
+  
+  
+## Statistical calculation
+
+The `nurse` function performs timecourse statistics, as summarised below. 
+
+1. Select and rename the required columns.
+
+2. Generate a table to use for annotating plots, including colours, renaming and order for treatment groups.
+
+3. Set the order treatment groups appear in plots. The user determines whether this is set manually using the annotation settings sheet, or alphabetically.
+
+4. Average technical replicates.
+
+5. Plot the timecourse (time on the x-axis against instability metric, e.g. instability index, on the y-axis) before baseline normalisation. This is useful to visualise baseline variability, including repeat length.
+
+6. Plot timecourses for each differentiation within the treatment groups separately. This is even more useful for visualising baseline variability within and between differentiations.
+
+7. Baseline normalisation. This accounts for variability at the start of each differentiation (e.g. skewed distributions), so timecourse slopes start at 0. It does not alter the slopes, just y-intercepts.
+
+8. Plot the timecourse and separate differentiations after baseline normalisation.
+
+9. Basic *one-way ANOVA* of instability metric slopes. The slope for each differentiation and treatment is extracted using a linear model of `instability_metric ~ time`. This is followed by a one-way anova of `slope ~ treatment`, to assess the impact of treatment on rate of change of the instability metric. A hosthoc pairwise t-test is performed, with Bonferroni correction for multiple comparisons, to compare treatment groups. This basic one-way ANOVA is less statistically robust that the *EMM* method below.
+
+10. Analyse timecourses using user-defined statistical models. 
+
+  - Each model is fitted using `lm` or `lmer`, then an ANOVA is used to assess the overall significance of the predictor variables; treatment and time +/- differentiation. 
+
+  - `emtrends` is then used to calculate the estimated marginal means of the slopes, controlling for the other variables in the model, and perform pairwise t-test comparisons of the slopes for each treatment group, Bonferroni correcting for multiple comparisons. 
+  
+  - This *EMM* method is more statistically robust than the *one-way ANOVA* above, as it considers the context of the experiment (the other variables in the model) and provides a more accurate comparison of slopes. 
+  
+  - The models used were:
+
+    - **lm_ancova2**. A two-way linear ANCOVA with interaction. `lm(instability_metric ~ treatment * time)`. This was used in the original submission. This model examines the effect of two factors (treatment_group and time) and their interaction on the response variable (instability_metric). It's a classic two-way ANCOVA where there are no additional covariates beyond the primary predictors and their interaction. It is called an ANCOVA, rather than ANOVA, because the model includes both cnotinuous and categorical predictor variables.
+  
+    - **lm_ancova3.1**. Three-way linear ANCOVA without full interaction. `lm(instability_metric ~ treatment * time + differentiation)`. This model assesses the effects of two factors and their interaction (treatment and time), and includes an additional covariate (differentiation) without any interaction with time. This is effectively a three-way ANCOVA but without interaction terms for all three variables.
+  
+    - **lm_ancova3.2**. Three-way linear ANCOVA with selective interactions. `lm(instability_metric ~ treatment * time + differentiation * time)`. This model includes two factors and their interaction (treatment and time), as well as a third factor (differentation) that interacts only with time. This provides a specific focus on how differentiation impact changes over time, in addition to the primary interaction between treatment and time.
+  
+    - **lmer_ancova3.1**. Linear mixed effects model ANCOVA with random intercept. `lmer(instability_metric ~ treatment * time + (1 | differentiation))`. This mixed-effects model evaluates the interaction between two factors (treatment and time) on the response variable (instability_metric), with a random intercept for the third variable (differentiation). This structure allows for random variability within differentiation, suitable for data with nested or hierarchical structures (e.g. measurements nested within different levels of differentiation).
+  
+    - **lmer_ancova3.2**. Linear mixed effects model ANCOVA with random intercept and random slope for time within differentiation. `lmer(instability_metric ~ treatment * time + (1 + time | differentiation))`. This model extends the previous one by allowing for random intercepts for each differentiation and random slopes of instability over time. It accounts for the variability in baseline instability and its trajectory over time within each differentiation.
+    
+  - **lmer_ancova3.2** was selected as the main statistical model, as it is the most appropriate structure for our experimental set up. This was externally validated by Prof Peter Holmans.
+  
+11. Plot the model coefficients.
+  
+12. Plot the slope for each treatment, controlled for other variables in the model, along with the Bonferroni corrected pairwise comparisons and the ANOVA report for the interaction between treatment and time.
+
+13. Compare the model fits:
+
+  - Firstly it plots the key metrics for each model.
+  
+    - **AIC** (Akaike Information Criterion). AIC is a measure of the relative quality of a statistical model for a given set of data. It balances the model's fit (likelihood) against its complexity (number of parameters used). A *lower* AIC value indicates a model that achieves a good balance between simplicity and fit. When comparing models, the one with a lower AIC is generally considered better because it suggests that the model explains a greater amount of variability with fewer parameters, avoiding overfitting.
+    
+    - **BIC** (Bayesian Information Criterion). Similar to AIC, the BIC also evaluates a model’s fit versus its complexity, but does so with a stronger penalty for models with more parameters. This makes BIC more stringent than AIC, especially with larger sample sizes. A lower BIC value indicates a more preferable model, suggesting an optimal balance of complexity and fit under Bayesian principles. Like AIC, when models have lower BIC values, they are generally seen as better, particularly from a Bayesian inference standpoint.
+    
+    - **Adjusted R-squared**. Adjusted R-squared is a modification of R-squared that adjusts for the number of predictors in the model. Unlike R-squared, which can only increase as more predictors are added, adjusted R-squared increases only if the new term improves the model more than would be expected by chance. Higher adjusted R-squared values indicate a model that explains more of the variance in the response variable, relative to the number of predictors used. A model with a substantially higher adjusted R-squared is considered to have a better fit.
+    
+    - **P-value for the interaction of treatment:time**. The p-value tests the hypothesis that the coefficient of the interaction term (treatment:time) is zero (no effect). A low p-value (typically <0.05) suggests that there is strong evidence against the null hypothesis, indicating a statistically significant interaction effect. When comparing models, a lower p-value for the interaction term you are interested in suggests that the effect of the interaction is more statistically significant in that model. For plotting, the p-values have been `-log10(p)` transformed. This transformation scales the p-values in a way that spreads them out across a wider range, making it easier to visually differentiate between levels of significance, especially when plotting. By converting p-values in this way, highly significant results (very low p-values) are given *higher* numerical values and thus stand out more prominently on plots.
+    
+  - It then plots the **observed vs fitted values** of the instability metric from each model.
+  
+    - This plot shows the relationship between the actual data points (observed values) and the values predicted by the model (fitted values). It is used to visually assess how well the model captures the trends in the data. In a perfect model, all points would lie on a 45-degree line where the fitted values exactly equal the observed values. This line is shown in the plot for reference.
+    
+  - Then the **residuals plot**.
+  
+    - Residuals are the differences between observed values and fitted values. Residuals should be randomly dispersed around the horizontal axis (zero line), indicating that the residuals are evenly distributed regardless of the fitted value.
+    
+  - Finally the **coefficients plot**. 
+  
+    - This visually represents the estimated effects (or "weights") of each predictor variable included in the models. 
+    
+    - Each point in the plot represents the coefficient of a predictor from the model. A coefficient describes how much the dependent variable (instability metric) is expected to increase of decrease when the predictor (treatment or differentiation) increases by one unit, holding all other predictors constant. 
+    
+    - Errorbars represent confidence intervals that indicate the uncertainty around each coefficient estimate. Narrower bars suggest more precise estimates, while wider bars indicate greater uncertainty. 
+    
+    - The line at zero helps in identifying whether the coefficients are significantly different from zero. Coefficients that do not cross this line are considered statistically significant at the chosen confidence level, indicating a likely true effect rather than a result of random variation.
+
+
+14. Plot the timecourse corrected for variables in the model (i.e. differentiation and starting CAG). Correction uses the main model selected above.
+
+15. Test whether the instability rate slopes are significantly non-zero. This operates separately on both original and corrected data.
+
+
+``` {r run_stats, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+# Vector of stats metrics, user determined
+names(stats_metrics) <- stats_metrics
+
+# Vector of experiments
+experiment_names <- unique(na.omit(juliet_settings$experiment_id))
+names(experiment_names) <- experiment_names
+
+# Vector of mean levels
+mean_levels <- c("unique_id", "predvar2") # unique_id averages by unique ID (averages technical reps), predvar2 averages by differentiation_ID (averages unique IDs)
+names(mean_levels) <- mean_levels
+
+# Add plotting annotation to romeo instability data
+romeo_data <- romeo_data %>%
+  left_join(annotation,
+            by = join_by(experiment_id, group_juliet)) %>%
+  relocate(c(group_colour, group_rename, group_order),
+           .after = "exclude")
+
+
+# For each experiment, run stats with each instability metric and averaging level
+timecourse_stats <- lapply(mean_levels, function(mean_level,
+                                                 romeo_data,
+                                                 stats_yvar,
+                                                 stats_setpoint,
+                                                 stats_metrics_rename,
+                                                 hide_ns,
+                                                 experiment_names,
+                                                 stats_metrics,
+                                                 fits,
+                                                 selected_fit,
+                                                 slope_errorbar,
+                                                 plot_points,
+                                                 multiple_testing) {
+  stats_by_metric <- lapply(stats_metrics, function(stats_metric,
+                                                    romeo_data,
+                                                    stats_yvar,
+                                                    stats_setpoint,
+                                                    stats_metrics_rename,
+                                                    hide_ns,
+                                                    experiment_names,
+                                                    fits,
+                                                    selected_fit,
+                                                    slope_errorbar,
+                                                    plot_points,
+                                                    multiple_testing) {
+    stats_by_experiment <- lapply(experiment_names, function(experiment_name,
+                                                             romeo_data,
+                                                             stats_yvar,
+                                                             stats_setpoint,
+                                                             stats_metrics_rename,
+                                                             hide_ns,
+                                                             fits,
+                                                             selected_fit,
+                                                             slope_errorbar,
+                                                             plot_points,
+                                                             multiple_testing) {
+      # # Manual
+      # mean_level = mean_levels[[2]]
+      # stats_metric = stats_metrics[[4]]
+      # experiment_name = experiment_names[[1]]
+      # print(paste(mean_level, "-", stats_metric, "-", experiment_name))
+      
+      # Filter instability data
+      my_romeo <- romeo_data %>%
+        dplyr::filter(range == "range2",
+                      experiment_id == experiment_name,
+                      yvar == stats_yvar,
+                      setpoint == stats_setpoint)
+      
+      # Stats
+      my_stats <- nurse(data = my_romeo,
+                        mean_level = mean_level,
+                        sample_id_col = "sample_name",
+                        unique_id_col = "unique_id",
+                        responsevar_col = stats_metric,
+                        responsevar_label = stats_metrics_rename[[stats_metric]],
+                        time_col = "week",
+                        time_label = "Week",
+                        predvar1_col = "group_juliet",
+                        predvar1_colour_col = "group_colour",
+                        predvar1_rename_col = "group_rename",
+                        predvar1_order_col = "group_order",
+                        predvar1_label = "Treatment",
+                        predvar2_col = "group_romeo",
+                        predvar2_label = "Differentiation ID",
+                        baseline_normalise = TRUE,
+                        multiple_testing = multiple_testing, # "tukey" , "bonferroni"
+                        slope_errorbar = slope_errorbar, # "CL", "SE", "SD"
+                        fits = fits,
+                        selected_fit = selected_fit,
+                        hide_ns = hide_ns,
+                        plot_points = plot_points,
+                        xangle = 45)
+      # my_stats$plot_timecourse_predvar2
+      
+      # Output
+      return(my_stats)
+      
+    },
+    romeo_data = romeo_data,
+    stats_yvar = stats_yvar,
+    stats_setpoint = stats_setpoint,
+    stats_metrics_rename = stats_metrics_rename,
+    hide_ns = hide_ns,
+    fits = fits,
+    selected_fit = selected_fit,
+    slope_errorbar = slope_errorbar,
+    plot_points = plot_points,
+    multiple_testing = multiple_testing)
+  },
+  romeo_data = romeo_data,
+  stats_yvar = stats_yvar,
+  stats_setpoint = stats_setpoint,
+  stats_metrics_rename = stats_metrics_rename,
+  hide_ns = hide_ns,
+  experiment_names = experiment_names,
+  fits = fits,
+  selected_fit = selected_fit,
+  slope_errorbar = slope_errorbar,
+  plot_points = plot_points,
+  multiple_testing = multiple_testing)
+},
+romeo_data = romeo_data,
+stats_yvar = stats_yvar,
+stats_setpoint = stats_setpoint,
+stats_metrics_rename = stats_metrics_rename,
+hide_ns = hide_ns,
+experiment_names = experiment_names,
+stats_metrics = stats_metrics,
+fits = fits,
+selected_fit = selected_fit,
+slope_errorbar = slope_errorbar,
+plot_points = plot_points,
+multiple_testing = multiple_testing)
+
+# timecourse_stats$predvar2$ii$MSH3aso_dose_titration$plot_model_metrics
+
+```
+
+
+## Differentiation timecourses
+
+First, visualise the differentiations within each treatment group separately.
+
+Only `mean_rpt` is shown for brevity, as it both summarises the whole distribution and provides repeat length (as opposed to `modal repeat length`, which informs only about repeat length, or `instability index`, which only tells you about repeat distribution). However, all instability metrics are available.
+
+### Well averaged
+
+``` {r differentiation_timecourses_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=12}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$mean_rpt
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_timecourse_predvar2"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+### Differentiation averaged
+
+``` {r differentiation_timecourses_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=12}
+
+# Extract plots
+my_stats <- timecourse_stats$predvar2$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_timecourse_predvar2_blnorm"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+## Timecourses
+
+### Well averaged
+
+``` {r timecourses_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_timecourse_blnorm"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+### Differentiation averaged
+
+``` {r timecourses_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+# Extract plots
+my_stats <- timecourse_stats$predvar2$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_timecourse_blnorm"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+### Custom
+
+For presentation purposes, the slopes of well-averaged data have been combined with points from differentiation-averaged data.
+
+``` {r timecourses_custom, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_timecourse_blnorm_uslope_ppoints"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+## Basic one-way ANOVA of slopes
+
+As described above, the slope is calculated for each combination of treatment and differentiation using a simple linear model of `instability_metric ~ time`. We then perform a one-way ANOVA on the computed slopes (`slope ~ treatment`), followed by posthoc pairwise t-tests with Bonferroni correction for multiple comparisons. Posthoc tests are used to dtermine which specific groups differ after finding a significant overall effect.
+
+### Well averaged
+
+#### Plots
+
+``` {r anova1_plot_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=5}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_slopes_uncorrected"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+#### Statistics
+
+T-test results are provided as tables below, allowing you to inspect p-values before and after Bonferroni correction.
+
+``` {r anova1_ttest_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, results='asis'}
+
+# Extract ttests
+my_ttests <- lapply(my_stats, function(my_stat) {
+  my_stat[["ttest_uncorrected"]]
+})
+
+# Display
+for (ttest_name in names(my_ttests)) {
+  print(ttest_name)
+  print(kable(my_ttests[ttest_name], caption = "Pairwise t-tests"))
+}
+
+```
+
+
+### Differentiation averaged
+
+#### Plots
+
+``` {r anova1_plot_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=5}
+
+# Extract plots
+my_stats <- timecourse_stats$predvar2$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_slopes_uncorrected"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+#### Statistics
+
+T-test results are provided as tables below, allowing you to inspect p-values before and after Bonferroni correction.
+
+``` {r anova1_ttest_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, results='asis'}
+
+# Extract ttests
+my_ttests <- lapply(my_stats, function(my_stat) {
+  my_stat[["ttest_uncorrected"]]
+})
+
+# Plot
+for (ttest_name in names(my_ttests)) {
+  print(ttest_name)
+  print(kable(my_ttests[ttest_name], caption = "Pairwise t-tests"))
+}
+
+```
+
+
+
+## Model slopes
+
+These plots use the models to visualise the slopes of change in instability metric over time for different treatments, controlling for other variables in the model. The y-axis represents the estimated slope of change in instability metric over time, and the x-axis is different treatment groups. If significant pairwise comparisons exist, they are displayed as horizontal bars. 
+
+Only instability index (`ii`) is shown for brevity, but all instability metrics are available.
+
+
+### Well averaged
+
+``` {r trends_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=7, fig.width=7}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$ii
+my_timecourse_models <- lapply(my_stats, function(my_stat) {
+  my_stat[["timecourse_models"]]
+})
+
+# Plot
+for (experiment_name in names(my_timecourse_models)) {
+  
+  # # Manual
+  # experiment_name = names(my_timecourse_models)[[1]]
+  
+  my_models <- my_timecourse_models[[experiment_name]]
+  for(model_name in names(my_models)) {
+    
+    # # Manual
+    # model_name = names(my_models)[[1]]
+    
+    print(paste(experiment_name, "-", model_name))
+    print(my_models[[model_name]][["plot_slopes"]])
+    print(kable(my_models[[model_name]]$anova_result, caption = "Anova"))
+    print(kable(my_models[[model_name]]$pwc_result, caption = "Pairwise comparisons"))
+    print(kable(my_models[[model_name]]$trends, caption = "Trends"))
+  }
+}
+
+
+```
+
+
+### Differentiation averaged
+
+``` {r trends_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=7, fig.width=7}
+
+# Extract plots
+my_stats <- timecourse_stats$predvar2$ii
+my_timecourse_models <- lapply(my_stats, function(my_stat) {
+  my_stat[["timecourse_models"]]
+})
+
+# Plot
+for (experiment_name in names(my_timecourse_models)) {
+  cat(experiment_name)
+  my_models <- my_timecourse_models[[experiment_name]]
+  for(model_name in names(my_models)) {
+    print(model_name)
+    print(my_models[[model_name]][["plot_slopes"]])
+    print(kable(my_models[[model_name]]$anova_result, caption = "Anova"))
+    print(kable(my_models[[model_name]]$pwc_result, caption = "Pairwise comparisons"))
+    print(kable(my_models[[model_name]]$trends, caption = "Trends"))
+  }
+}
+
+```
+
+
+## Compare model metrics
+
+### Well averaged
+
+``` {r model_metrics_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=7, fig.width=7}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_model_metrics"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+### Differentiation averaged
+
+``` {r model_metrics_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=7, fig.width=7}
+
+# Extract plots
+my_stats <- timecourse_stats$predvar2$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_model_metrics"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+## Compare model observed vs fitted values
+
+### Well averaged
+
+``` {r observed_fitted_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=12}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_observed_fitted"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+### Differentiation averaged
+
+``` {r observed_fitted_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=12}
+
+# Extract plots
+my_stats <- timecourse_stats$predvar2$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_observed_fitted"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+## Compare model residuals
+
+### Well averaged
+
+``` {r residuals_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_residuals"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+### Differentiation averaged
+
+``` {r residuals_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+# Extract plots
+my_stats <- timecourse_stats$predvar2$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_residuals"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+## Model coefficients
+
+Review the impacts of predictor variables (treatment group and differentiation) on the response variable (instability metric). Only the coefficient plots for `instability index` are shown for brevity, but all instability metrics are available
+
+### Well averaged
+
+``` {r coefficients_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=9}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_coefficients"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+### Differentiation averaged
+
+``` {r coefficients_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=9}
+
+# Extract plots
+my_stats <- timecourse_stats$predvar2$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_coefficients"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+## Timecourse corrected
+
+Timecourses of the instability metric against time for each treatment group. Datapoints have been corrected using the selected model, **lmer_ancova3.2**.
+
+### Well averaged
+
+``` {r timecourse_corrected_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_timecourse_corrected_blnorm"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+### Differentiation averaged
+
+``` {r timecourse_corrected_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+# Extract plots
+my_stats <- timecourse_stats$predvar2$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["plot_timecourse_corrected_blnorm"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+## Non-zero slopes
+
+Only statistics for instability index are shown for brevity, but all instability metrics are available.
+
+### Well averaged
+
+``` {r nonzero_uniqueid, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=4, fig.width=8}
+
+# Extract plots
+my_stats <- timecourse_stats$unique_id$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["nonzero_plots"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+### Differentiation averaged
+
+``` {r nonzero_predvar2, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=4, fig.width=8}
+
+# Extract plots
+my_stats <- timecourse_stats$predvar2$ii
+my_plots <- lapply(my_stats, function(my_stat) {
+  my_stat[["nonzero_plots"]]
+})
+
+# Plot
+for (plot_name in names(my_plots)) {
+  print(plot_name)
+  print(my_plots[plot_name])
+}
+
+```
+
+
+
+# MSH3ko vs CRISPRwt experiment
+
+## Statistical calculation
+
+``` {r manual_stats, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+# Groups present
+my_groups_present <- romeo_data %>%
+  dplyr::filter(week <= 15,
+                experiment_id %in% c("MSH3ko_CRISPRwt", "CRISPRwt_MSH3aso")) %>%
+  distinct(experiment_id, group_romeo, group_juliet) %>%
+  arrange(experiment_id, group_romeo, group_juliet)
+
+# Display table
+kable(my_groups_present, caption = "Groups present")
+                  
+
+# Filter instability data and modify experiment ID and groups
+# Baseline samples have already been shared from other groups in each differentiation above.
+romeo_data_manual <- romeo_data %>%
+  dplyr::filter(week <= 15,
+                experiment_id %in% c("MSH3ko_CRISPRwt", "CRISPRwt_MSH3aso"),
+                group_juliet %in% c("CRISPRwt_vehicle", "MSH3ko_untreated", "unedited_untreated")) %>%
+  dplyr::mutate(experiment_id = "manual_MSH3ko_under105d",
+                group_juliet = case_when(group_juliet == "CRISPRwt_vehicle" ~ "CRISPRwtORunedited_controltreatment",
+                                                  group_juliet == "unedited_untreated" ~ "CRISPRwtORunedited_controltreatment",
+                                                  group_juliet == "MSH3ko_untreated" ~ "MSH3ko_controltreatment",
+                                                  TRUE ~ NA))
+
+# Reannotate with plot settings
+romeo_data_manual <- romeo_data_manual %>%
+  dplyr::select(-c(group_colour, group_rename, group_order)) %>%
+  left_join(annotation,
+            by = join_by(experiment_id, group_juliet)) %>%
+  relocate(c(group_colour, group_rename, group_order),
+           .after = "exclude") %>%
+  droplevels()
+
+# Filter for metrics to use in stats (will use height below for plotting traces)
+romeo_data_manual_stats <- romeo_data_manual %>%
+  dplyr::filter(range == "range2",
+                yvar == stats_yvar,
+                setpoint == stats_setpoint) %>%
+  droplevels()
+
+
+# Stats for each metric
+# This presents the message "NOTE: A nesting structure was detected in the fitted model: differentiation_id %in% group". 
+# This is because, for e.g. differentiations 1 and 2 only occur in group A and differentiations 3 and 4 only occur in group B. Fine to proceed.
+timecourse_stats_manual <- lapply(mean_levels, function(mean_level,
+                                                        stats_metrics,
+                                                        stats_metrics_rename,
+                                                        stats_yvar,
+                                                        stats_setpoint,
+                                                        romeo_data_manual_stats,
+                                                        hide_ns,
+                                                        fits,
+                                                        selected_fit,
+                                                        slope_errorbar,
+                                                        plot_points,
+                                                        multiple_testing) {
+  stats_by_metric <- lapply(stats_metrics, function(stats_metric,
+                                                    stats_metrics_rename,
+                                                    stats_yvar,
+                                                    stats_setpoint,
+                                                    romeo_data_manual_stats,
+                                                    hide_ns,
+                                                    fits,
+                                                    selected_fit,
+                                                    mean_level,
+                                                    slope_errorbar,
+                                                    plot_points,
+                                                    multiple_testing) {
+    # # Manual
+    # mean_level = mean_levels[[2]]
+    # stats_metric = stats_metrics[[4]]
+    # print(paste(mean_level, "-", stats_metric))
+    
+    nurse(data = romeo_data_manual_stats,
+          mean_level = mean_level,
+          sample_id_col = "sample_name",
+          unique_id_col = "unique_id",
+          responsevar_col = stats_metric,
+          responsevar_label = stats_metrics_rename[[stats_metric]],
+          time_col = "week",
+          time_label = "Week",
+          predvar1_col = "group_juliet",
+          predvar1_colour_col = "group_colour",
+          predvar1_rename_col = "group_rename",
+          predvar1_order_col = "group_order",
+          predvar1_label = "Treatment",
+          predvar2_col = "group_romeo",
+          predvar2_label = "Differentiation ID",
+          baseline_normalise = TRUE,
+          multiple_testing = multiple_testing, # "bonferroni", "tukey"
+          slope_errorbar = slope_errorbar, # "CL", "SE", "SD"
+          fits = fits,
+          selected_fit = selected_fit,
+          hide_ns = hide_ns,
+          plot_points = plot_points,
+          xangle = 45)
+          
+    
+  },
+  stats_metrics_rename = stats_metrics_rename,
+  stats_yvar = stats_yvar,
+  stats_setpoint = stats_setpoint,
+  romeo_data_manual_stats = romeo_data_manual_stats,
+  hide_ns = hide_ns,
+  fits = fits,
+  selected_fit = selected_fit,
+  mean_level = mean_level,
+  slope_errorbar = slope_errorbar,
+  plot_points = plot_points,
+  multiple_testing = multiple_testing)
+},
+stats_metrics = stats_metrics,
+stats_metrics_rename = stats_metrics_rename,
+stats_yvar = stats_yvar,
+stats_setpoint = stats_setpoint,
+romeo_data_manual_stats = romeo_data_manual_stats,
+hide_ns = hide_ns,
+fits = fits,
+selected_fit = selected_fit,
+slope_errorbar = slope_errorbar,
+plot_points = plot_points,
+multiple_testing = multiple_testing)
+
+```
+
+
+## Differentiation timecourses
+
+``` {r manual_differentiation_timecourses, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=12}
+
+for (mean_level in mean_levels) {
+  print(mean_level)
+  print(timecourse_stats_manual[[mean_level]]$mean_rpt$plot_timecourse_predvar2)
+}
+
+```
+
+
+## Timecourses
+
+``` {r manual_timecourses, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+for (mean_level in mean_levels) {
+  print(mean_level)
+  print(timecourse_stats_manual[[mean_level]]$ii$plot_timecourse_blnorm)
+}
+
+```
+
+
+## Custom timecourses
+
+For presentation purposes, the slopes of well-averaged data have been combined with points from differentiation-averaged data.
+
+``` {r manual_timecourses_custom, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+print(timecourse_stats_manual[[mean_level]]$ii$plot_timecourse_blnorm_uslope_ppoints)
+
+```
+
+
+## Basic one-way ANOVA of slopes
+
+#### Plots
+
+``` {r manual_anova1_plot, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=5}
+
+for (mean_level in mean_levels) {
+  print(mean_level)
+  print(timecourse_stats_manual[[mean_level]]$ii$plot_slopes_uncorrected)
+}
+
+```
+
+
+#### Statistics
+
+``` {r manual_anova1_ttest, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, results='asis'}
+
+for (mean_level in mean_levels) {
+  print(mean_level)
+  print(kable(timecourse_stats_manual[[mean_level]]$ii$ttest_uncorrected, caption = "Pairwise t-tests"))
+}
+
+```
+
+
+## Model slopes
+
+``` {r manual_trends, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=7, fig.width=7}
+
+for (mean_level in mean_levels) {
+  my_models <- timecourse_stats_manual[[mean_level]]$ii$timecourse_models_worked
+  for (model_name in names(my_models)) {
+    print(paste(mean_level, "-", model_name))
+    print(my_models[[model_name]][["plot_slopes"]])
+    print(kable(my_models[[model_name]]$anova_result, caption = "Anova"))
+    print(kable(my_models[[model_name]]$pwc_result, caption = "Pairwise comparisons"))
+    print(kable(my_models[[model_name]]$trends, caption = "Trends"))
+    cat("\n")
+  }
+}
+
+```
+
+
+## Compare model metrics
+
+``` {r manual_model_metrics, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=7, fig.width=7}
+
+for (mean_level in mean_levels) {
+  print(mean_level)
+  print(timecourse_stats_manual[[mean_level]]$ii$plot_model_metrics)
+}
+
+```
+
+
+## Compare model observed vs fitted values
+
+``` {r manual_observed_fitted, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=12}
+
+for (mean_level in mean_levels) {
+  print(mean_level)
+  print(timecourse_stats_manual[[mean_level]]$ii$plot_observed_fitted)
+}
+
+```
+
+
+## Compare model residuals
+
+``` {r manual_residuals, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+for (mean_level in mean_levels) {
+  print(mean_level)
+  print(timecourse_stats_manual[[mean_level]]$ii$plot_residuals)
+}
+
+```
+
+
+## Model coefficients
+
+``` {r manual_coefficients, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=6, fig.width=9}
+
+for (mean_level in mean_levels) {
+  print(mean_level)
+  print(timecourse_stats_manual[[mean_level]]$ii$plot_coefficients)
+}
+
+```
+
+
+## Timecourse corrected
+
+``` {r manual_timecourse_corrected, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=5, fig.width=8}
+
+for (mean_level in mean_levels) {
+  print(mean_level)
+  print(timecourse_stats_manual[[mean_level]]$ii$plot_timecourse_corrected_blnorm)
+}
+
+```
+
+
+## Non-zero slopes
+
+``` {r manual_nonzero, echo=TRUE, eval=TRUE, message=TRUE, warning=FALSE, fig.height=4, fig.width=8}
+
+for (mean_level in mean_levels) {
+  print(mean_level)
+  print(timecourse_stats_manual[[mean_level]]$ii$nonzero_plots)
+}
+
+```
+
+
