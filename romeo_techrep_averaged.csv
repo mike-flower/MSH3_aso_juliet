@@ -1,4 +1,4 @@
-"unique_id","range","setpoint","yvar","tits","day","week","exclude","range_start","range_end","modal_bp","modal_rpt","modal_y","ii_threshold_abs","mean_rpt","sd_rpt","setpoint_rpt","ii","expi","contri","total_techreps"
+"unique_id","range","setpoint","yvar","count","day","week","exclude","range_start","range_end","modal_bp","modal_rpt","modal_y","ii_threshold_abs","mean_rpt","sd_rpt","setpoint_rpt","ii","expi","contri","total_techreps"
 "20231106_00001","range1",NA,"area",9,0,0,NA,0,36,151.266666666667,13.7555555555556,273355.444444444,109342.177777778,9.68042020721907,5.02663069432856,NA,NA,NA,NA,9
 "20231106_00001","range1",NA,"height",9,0,0,NA,0,36,147.741111111111,12.5803703703704,25118,10047.2,9.85060301164133,4.93401164664404,NA,NA,NA,NA,9
 "20231106_00001","range2","control","area",9,0,0,NA,115,160,512.883333333333,134.294444444444,7065,2826,134.416195451748,3.28284093809006,134.841632445638,-0.425436993889649,2.69283565089946,-2.80740657880297,9
